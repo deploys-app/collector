@@ -48,6 +48,10 @@ func main() {
 			},
 		},
 		Location: config.MustString("location"),
+		// How far back each WAF sync re-queries. Larger = recovers longer collector
+		// outages (bounded by Prometheus retention); buckets are upserted so the
+		// overlap with the previous run is harmless.
+		WAFLookback: config.DurationDefault("waf_lookback", 15*time.Minute),
 	}
 
 	stopSignal := make(chan os.Signal, 1)
@@ -95,9 +99,10 @@ func main() {
 }
 
 type Worker struct {
-	PromClient *prom.Client
-	Location   string
-	Client     api.Interface
+	PromClient  *prom.Client
+	Location    string
+	Client      api.Interface
+	WAFLookback time.Duration
 }
 
 func (w *Worker) RunProject() {
@@ -250,6 +255,10 @@ var (
 	rePodNameProject     = regexp.MustCompile(`^(.+)-(\d+)-[^-]+-[^-]+$`)
 	reServiceNameProject = regexp.MustCompile(`^(.+)-(\d+)$`)
 	reVolumeNameProject  = regexp.MustCompile(`^(.+)-(\d+)$`)
+	// WAF rule ids are server-generated as <projectID>-<rand>; the leading
+	// numeric run is the owning project (parapet_waf_matches carries no project
+	// label, so this prefix is the only attribution signal).
+	reWAFRuleProject = regexp.MustCompile(`^(\d+)-`)
 )
 
 func (w *Worker) syncDeploymentUsage(ctx context.Context) {
@@ -424,5 +433,74 @@ func (w *Worker) syncDeploymentUsage(ctx context.Context) {
 		syncDiskVector("disk_size", w.PromClient.GetDiskSize)
 	}()
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.syncWAFUsage(ctx)
+	}()
+
 	wg.Wait()
+}
+
+// syncWAFUsage collects per-minute WAF match counts and upserts them. It
+// re-queries a lookback window each run (not just the last minute) so a collector
+// outage shorter than the window is back-filled from Prometheus; the apiserver
+// upserts by bucket key, so the overlap is idempotent.
+func (w *Worker) syncWAFUsage(ctx context.Context) {
+	slog.Info("collector: sync waf")
+
+	lookback := w.WAFLookback
+	if lookback <= 0 {
+		lookback = 15 * time.Minute
+	}
+
+	// Align to the minute so every run targets the same bucket timestamps —
+	// required for the upsert to overwrite rather than duplicate.
+	end := time.Now().Truncate(time.Minute).Unix()
+	start := end - int64(lookback/time.Second)
+
+	samples, err := w.PromClient.GetWAFMatches(start, end)
+	if err != nil {
+		slog.Error("collector: sync waf error", "error", err)
+		return
+	}
+
+	req := api.CollectorSetWAFUsage{
+		Location: w.Location,
+	}
+	for _, s := range samples {
+		// A registered-but-idle rule reports increase==0 every minute; skip those
+		// so the table stays sparse (an absent bucket already means zero for both
+		// the chart and the range-sum).
+		if s.Value == 0 {
+			continue
+		}
+
+		m := reWAFRuleProject.FindStringSubmatch(s.RuleID)
+		if m == nil {
+			continue
+		}
+		projectID, _ := strconv.ParseInt(m[1], 10, 64)
+		if projectID == 0 {
+			continue
+		}
+
+		req.List = append(req.List, &api.CollectorWAFUsageItem{
+			ProjectID: projectID,
+			RuleID:    s.RuleID,
+			Action:    s.Action,
+			Value:     s.Value,
+			At:        s.Ts,
+		})
+	}
+
+	if len(req.List) == 0 {
+		return
+	}
+
+	_, err = w.Client.Collector().SetWAFUsage(ctx, &req)
+	if err != nil {
+		slog.Error("collector: sync waf error", "error", err)
+		return
+	}
 }
