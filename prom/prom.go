@@ -383,6 +383,29 @@ func (c *Client) SummaryEgress(projectID int64, startTimeUnix int64, dataRange s
 	return c.queryVectorValue(q)
 }
 
+// SummaryWAFEgress returns the bytes served from the edge to clients for a
+// project's external HTTP routes over the day. External-route backends are
+// Services named ext-<routeID>-<projectID>; parapet_backend_network_read_bytes
+// is the response volume parapet reads back from the customer origin (≈ what is
+// then served out to the client), and the service_name suffix attributes it to
+// the project. This is the edge-measured counterpart to SummaryEgress, which is
+// pod-based and therefore reports nothing for external routes (they have no pod).
+func (c *Client) SummaryWAFEgress(projectID int64, startTimeUnix int64, dataRange string) (string, error) {
+	q := make(url.Values)
+
+	q.Set("query", fmt.Sprintf(
+		`(
+				  sum(max_over_time(parapet_backend_network_read_bytes{service_namespace="%[1]s",service_name=~"ext-.*-%[2]d"}[%[3]s]))
+				  -
+				  sum(min_over_time(parapet_backend_network_read_bytes{service_namespace="%[1]s",service_name=~"ext-.*-%[2]d"}[%[3]s]))
+				) or vector(0)`,
+		c.Namespace, projectID, dataRange,
+	))
+	q.Set("time", strconv.FormatInt(startTimeUnix, 10))
+
+	return c.queryVectorValue(q)
+}
+
 func (c *Client) SummaryDisk(projectID int64, startTimeUnix int64, dataRange string, rangeSecond int64) (string, error) {
 	q := make(url.Values)
 

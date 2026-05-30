@@ -216,6 +216,19 @@ func (w *Worker) syncProjectUsageDate(ctx context.Context, p *api.CollectorProje
 		Value: value,
 	})
 
+	// waf egress (external HTTP routes — edge-measured, since they have no pod
+	// for the pod-based SummaryEgress above to see)
+	value, err = w.PromClient.SummaryWAFEgress(p.ID, et.Unix(), days)
+	if err != nil {
+		slog.Error("collector: get prom summary waf egress error", "error", err)
+		return
+	}
+	slog.Info("collector: syncProjectUsageDate", "resource", "waf_egress", "project", p.ID, "value", value)
+	req.Resources = append(req.Resources, &api.CollectorProjectUsageResource{
+		Name:  "waf_egress",
+		Value: value,
+	})
+
 	// disk
 	value, err = w.PromClient.SummaryDisk(p.ID, et.Unix(), days, rangeSeconds)
 	if err != nil {
