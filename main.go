@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -452,6 +453,12 @@ func (w *Worker) syncDeploymentUsage(ctx context.Context) {
 		w.syncWAFUsage(ctx)
 	}()
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.syncRateLimitUsage(ctx)
+	}()
+
 	wg.Wait()
 }
 
@@ -514,6 +521,75 @@ func (w *Worker) syncWAFUsage(ctx context.Context) {
 	_, err = w.Client.Collector().SetWAFUsage(ctx, &req)
 	if err != nil {
 		slog.Error("collector: sync waf error", "error", err)
+		return
+	}
+}
+
+// syncRateLimitUsage collects per-minute zone rate-limit decision counts and
+// upserts them — syncWAFUsage for parapet_ratelimit_total. Same lookback /
+// idempotent-upsert contract; project attribution comes from the
+// project-prefixed limit id embedded in the series name
+// (zone:<ns>/<configmap>:<projectID>-<rand>).
+func (w *Worker) syncRateLimitUsage(ctx context.Context) {
+	slog.Info("collector: sync ratelimit")
+
+	lookback := w.WAFLookback
+	if lookback <= 0 {
+		lookback = 15 * time.Minute
+	}
+
+	end := time.Now().Truncate(time.Minute).Unix()
+	start := end - int64(lookback/time.Second)
+
+	samples, err := w.PromClient.GetRateLimitDecisions(start, end)
+	if err != nil {
+		slog.Error("collector: sync ratelimit error", "error", err)
+		return
+	}
+
+	req := api.CollectorSetRateLimitUsage{
+		Location: w.Location,
+	}
+	for _, s := range samples {
+		// A registered-but-idle limit reports increase==0 every minute; skip so
+		// the table stays sparse (absent bucket == zero).
+		if s.Value == 0 {
+			continue
+		}
+
+		// zone:<ns>/<configmap>:<limitID> — the limit id is everything after the
+		// last ':'. Anything without one isn't a zone series; skip.
+		i := strings.LastIndexByte(s.Name, ':')
+		if i < 0 {
+			continue
+		}
+		limitID := s.Name[i+1:]
+
+		m := reWAFRuleProject.FindStringSubmatch(limitID)
+		if m == nil {
+			continue
+		}
+		projectID, _ := strconv.ParseInt(m[1], 10, 64)
+		if projectID == 0 {
+			continue
+		}
+
+		req.List = append(req.List, &api.CollectorRateLimitUsageItem{
+			ProjectID: projectID,
+			LimitID:   limitID,
+			Result:    s.Result,
+			Value:     s.Value,
+			At:        s.Ts,
+		})
+	}
+
+	if len(req.List) == 0 {
+		return
+	}
+
+	_, err = w.Client.Collector().SetRateLimitUsage(ctx, &req)
+	if err != nil {
+		slog.Error("collector: sync ratelimit error", "error", err)
 		return
 	}
 }

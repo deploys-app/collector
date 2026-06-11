@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/acoshift/configfile v1.9.0
-	github.com/deploys-app/api v0.0.0-20260527014259-a694a0a20801
+	github.com/deploys-app/api v0.0.0-20260611083612-f9dc8371ca28
 	golang.org/x/sync v0.11.0
 )
 
