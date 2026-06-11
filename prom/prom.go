@@ -308,6 +308,90 @@ func (c *Client) queryWAFMatrix(q url.Values) ([]*WAFSample, error) {
 	return vs, nil
 }
 
+type RateLimitSample struct {
+	Name   string // series name: zone:<namespace>/<configmap>:<limitID>
+	Result string // allowed|limited
+	Ts     int64  // unix second, minute-aligned bucket
+	Value  float64
+}
+
+// queryRateLimitMatrix runs a range query and flattens every series' samples
+// into RateLimitSamples, keeping the name / result labels — queryWAFMatrix for
+// parapet_ratelimit_total's label set.
+func (c *Client) queryRateLimitMatrix(q url.Values) ([]*RateLimitSample, error) {
+	resp, err := c.do("/api/v1/query_range?" + q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	var p struct {
+		Status string
+		Data   struct {
+			ResultType string
+			Result     []*struct {
+				Metric map[string]string
+				Values [][]any
+			}
+		}
+	}
+	err = json.Unmarshal(resp, &p)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.Status != "success" {
+		return nil, fmt.Errorf("not ok")
+	}
+
+	var vs []*RateLimitSample
+	for _, r := range p.Data.Result {
+		name := r.Metric["name"]
+		result := r.Metric["result"]
+		if name == "" {
+			continue
+		}
+		for _, vv := range r.Values {
+			if len(vv) != 2 {
+				continue
+			}
+			ts, ok := vv[0].(float64)
+			if !ok {
+				continue
+			}
+			s, ok := vv[1].(string)
+			if !ok {
+				continue
+			}
+			f, err := strconv.ParseFloat(s, 64)
+			if err != nil {
+				continue
+			}
+			vs = append(vs, &RateLimitSample{
+				Name:   name,
+				Result: result,
+				Ts:     int64(ts),
+				Value:  f,
+			})
+		}
+	}
+
+	return vs, nil
+}
+
+// GetRateLimitDecisions pulls per-minute zone rate-limit decision counts over
+// [startUnix, endUnix] at a 60s step — GetWAFMatches for
+// parapet_ratelimit_total. The name=~"zone:.+" matcher excludes the
+// platform-owned global set (named "global:<id>", which carries no project
+// prefix to attribute); zone series are named zone:<ns>/<configmap>:<limitID>.
+func (c *Client) GetRateLimitDecisions(startUnix, endUnix int64) ([]*RateLimitSample, error) {
+	q := make(url.Values)
+	q.Set("query", `sum(increase(parapet_ratelimit_total{name=~"zone:.+"}[1m])) by (name, result)`)
+	q.Set("start", strconv.FormatInt(startUnix, 10))
+	q.Set("end", strconv.FormatInt(endUnix, 10))
+	q.Set("step", "60")
+
+	return c.queryRateLimitMatrix(q)
+}
+
 // GetWAFMatches pulls per-minute WAF match counts over [startUnix, endUnix] at a
 // 60s step. increase[1m] at a 60s step tiles the window with no gaps/overlaps,
 // so summing buckets yields total hits. scope="zone" excludes the platform-owned
