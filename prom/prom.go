@@ -661,19 +661,28 @@ func (c *Client) GetDiskSize() ([]*VolumeVector, error) {
 }
 
 // hostPattern builds a PromQL host label regex from a list of domain names.
-// Wildcard domains (*.example.com) are expanded to match exactly one label
-// component — [^.]+\.example\.com — which mirrors ingress wildcard semantics.
 // Plain domains have their dots escaped. PromQL label regexes are fully
 // anchored by the engine, so no ^$ is needed.
+//
+// Wildcard domains (*.example.com) are deliberately skipped. The edge host
+// label oracle (parapet-ingress-controller's IsKnownHost) is an exact
+// string-map of Ingress-declared hosts: a wildcard Ingress route registers
+// the literal "*.example.com", so real subdomain requests (foo.example.com)
+// collapse to the "other" label and can never be attributed back to the
+// wildcard project. Expanding *.example.com to a [^.]+\.example\.com regex
+// would only capture concrete domains (e.g. x.example.com) that belong to a
+// different project whose exact Ingress route happens to fall under the
+// wildcard parent — causing cross-project double billing. Wildcard-domain
+// cache egress is therefore deliberately unbilled until the edge oracle
+// understands wildcard host matching.
 func hostPattern(domains []string) string {
 	parts := make([]string, 0, len(domains))
 	for _, d := range domains {
 		if strings.HasPrefix(d, "*.") {
-			rest := d[2:] // strip "*."
-			parts = append(parts, `[^.]+\.`+regexp.QuoteMeta(rest))
-		} else {
-			parts = append(parts, regexp.QuoteMeta(d))
+			// Skip — see doc comment above.
+			continue
 		}
+		parts = append(parts, regexp.QuoteMeta(d))
 	}
 	return strings.Join(parts, "|")
 }
@@ -689,8 +698,18 @@ func hostPattern(domains []string) string {
 //
 // Only HIT and STALE results are counted: MISS bytes flow through to the
 // customer origin and are already accounted for as pod egress or waf_egress.
+//
+// Wildcard domains are stripped by hostPattern (see its doc comment for the
+// reason). If stripping leaves no attributable domains, "0" is returned
+// directly — querying with an empty pattern would match nothing anyway, and
+// returning "0" ensures any stale value is reset on the apiserver side,
+// consistent with the no-domains short-circuit in the caller.
 func (c *Client) SummaryCacheEgress(domains []string, startTimeUnix int64, dataRange string) (string, error) {
 	pattern := hostPattern(domains)
+	if pattern == "" {
+		// No exact-match domains after wildcard filtering; nothing attributable.
+		return "0", nil
+	}
 	q := make(url.Values)
 	q.Set("query", fmt.Sprintf(
 		`sum(increase(parapet_cache_egress_bytes{result=~"HIT|STALE",host=~"%s"}[%s])) or vector(0)`,
