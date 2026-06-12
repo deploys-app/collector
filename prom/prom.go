@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
+	"strings"
 )
 
 type Client struct {
@@ -656,4 +658,45 @@ func (c *Client) GetDiskSize() ([]*VolumeVector, error) {
 	))
 
 	return c.queryVolumeVectors(q)
+}
+
+// hostPattern builds a PromQL host label regex from a list of domain names.
+// Wildcard domains (*.example.com) are expanded to match exactly one label
+// component — [^.]+\.example\.com — which mirrors ingress wildcard semantics.
+// Plain domains have their dots escaped. PromQL label regexes are fully
+// anchored by the engine, so no ^$ is needed.
+func hostPattern(domains []string) string {
+	parts := make([]string, 0, len(domains))
+	for _, d := range domains {
+		if strings.HasPrefix(d, "*.") {
+			rest := d[2:] // strip "*."
+			parts = append(parts, `[^.]+\.`+regexp.QuoteMeta(rest))
+		} else {
+			parts = append(parts, regexp.QuoteMeta(d))
+		}
+	}
+	return strings.Join(parts, "|")
+}
+
+// SummaryCacheEgress returns the bytes served from the edge cache (HIT+STALE)
+// for a project's domains over the day window ending at startTimeUnix.
+//
+// We use increase() rather than the max_over_time-min_over_time idiom used by
+// SummaryEgress/SummaryWAFEgress: the cache metric is exported by multiple
+// edge instances independently, and counter resets on eviction or restart would
+// corrupt the max-min difference across instances that didn't all restart at the
+// same time.
+//
+// Only HIT and STALE results are counted: MISS bytes flow through to the
+// customer origin and are already accounted for as pod egress or waf_egress.
+func (c *Client) SummaryCacheEgress(domains []string, startTimeUnix int64, dataRange string) (string, error) {
+	pattern := hostPattern(domains)
+	q := make(url.Values)
+	q.Set("query", fmt.Sprintf(
+		`sum(increase(parapet_cache_egress_bytes{result=~"HIT|STALE",host=~"%s"}[%s])) or vector(0)`,
+		pattern, dataRange,
+	))
+	q.Set("time", strconv.FormatInt(startTimeUnix, 10))
+
+	return c.queryVectorValue(q)
 }

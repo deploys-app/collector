@@ -230,6 +230,29 @@ func (w *Worker) syncProjectUsageDate(ctx context.Context, p *api.CollectorProje
 		Value: value,
 	})
 
+	// cache egress (bytes served directly from the edge cache — HITs are
+	// origin-invisible so no existing metric bills them; MISS bytes travel to the
+	// origin and are already counted in egress / waf_egress)
+	if len(p.Domains) == 0 {
+		// No domains routed to this project; skip the Prometheus query and report
+		// zero so any stale value is reset on the apiserver side.
+		req.Resources = append(req.Resources, &api.CollectorProjectUsageResource{
+			Name:  "cache_egress",
+			Value: "0",
+		})
+	} else {
+		value, err = w.PromClient.SummaryCacheEgress(p.Domains, et.Unix(), days)
+		if err != nil {
+			slog.Error("collector: get prom summary cache egress error", "error", err)
+			return
+		}
+		slog.Info("collector: syncProjectUsageDate", "resource", "cache_egress", "project", p.ID, "value", value)
+		req.Resources = append(req.Resources, &api.CollectorProjectUsageResource{
+			Name:  "cache_egress",
+			Value: value,
+		})
+	}
+
 	// disk
 	value, err = w.PromClient.SummaryDisk(p.ID, et.Unix(), days, rangeSeconds)
 	if err != nil {
