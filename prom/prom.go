@@ -725,6 +725,74 @@ func (c *Client) GetRequests() ([]*PodVector, error) {
 	return c.queryPodVectors(q)
 }
 
+// StaticRequestVector is one (project SID, site name) request-rate sample from
+// the shared static-gateway. Static deployments have no pod/Service, so their
+// request volume is attributed by the gateway's own per-site labels instead of
+// the pod/service_name labels the container metrics use.
+type StaticRequestVector struct {
+	Project string // project SID (e.g. "acme")
+	Name    string // site / deployment display name
+	Time    int64
+	Value   string
+}
+
+func (c *Client) queryStaticRequestVectors(q url.Values) ([]*StaticRequestVector, error) {
+	resp, err := c.do("/api/v1/query?" + q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	var p struct {
+		Status string
+		Data   struct {
+			ResultType string
+			Result     []*struct {
+				Metric map[string]string
+				Value  []any
+			}
+		}
+	}
+	err = json.Unmarshal(resp, &p)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.Status != "success" {
+		return nil, fmt.Errorf("not ok")
+	}
+
+	vs := make([]*StaticRequestVector, 0, len(p.Data.Result))
+	for _, x := range p.Data.Result {
+		project := x.Metric["project"]
+		name := x.Metric["name"]
+		if len(x.Value) != 2 {
+			continue
+		}
+		if project == "" || name == "" {
+			continue
+		}
+
+		vs = append(vs, &StaticRequestVector{
+			Project: project,
+			Name:    name,
+			Time:    int64(x.Value[0].(float64)),
+			Value:   x.Value[1].(string),
+		})
+	}
+
+	return vs, nil
+}
+
+// GetStaticRequests returns the per-site request rate (rps) served by the
+// shared static-gateway, summed across gateway replicas and grouped by the
+// project SID + site name the gateway labels each request with.
+func (c *Client) GetStaticRequests() ([]*StaticRequestVector, error) {
+	q := make(url.Values)
+
+	q.Set("query", `sum(rate(static_gateway_requests_total[1m])) by (project, name)`)
+
+	return c.queryStaticRequestVectors(q)
+}
+
 func (c *Client) GetDiskUsage() ([]*VolumeVector, error) {
 	q := make(url.Values)
 
