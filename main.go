@@ -482,6 +482,12 @@ func (w *Worker) syncDeploymentUsage(ctx context.Context) {
 		w.syncRateLimitUsage(ctx)
 	}()
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.syncCacheOverrideUsage(ctx)
+	}()
+
 	wg.Wait()
 }
 
@@ -613,6 +619,77 @@ func (w *Worker) syncRateLimitUsage(ctx context.Context) {
 	_, err = w.Client.Collector().SetRateLimitUsage(ctx, &req)
 	if err != nil {
 		slog.Error("collector: sync ratelimit error", "error", err)
+		return
+	}
+}
+
+// syncCacheOverrideUsage collects per-minute cache-override decision counts and
+// upserts them — syncRateLimitUsage for parapet_cache_override_total. Same
+// lookback / idempotent-upsert contract; project attribution comes from the
+// project-prefixed override id embedded in the series name
+// (zone:<ns>/<configmap>:<projectID>-<rand>). The bucket key carries both
+// action and result (the cache vec has both labels).
+func (w *Worker) syncCacheOverrideUsage(ctx context.Context) {
+	slog.Info("collector: sync cache override")
+
+	lookback := w.WAFLookback
+	if lookback <= 0 {
+		lookback = 15 * time.Minute
+	}
+
+	end := time.Now().Truncate(time.Minute).Unix()
+	start := end - int64(lookback/time.Second)
+
+	samples, err := w.PromClient.GetCacheOverrideDecisions(start, end)
+	if err != nil {
+		slog.Error("collector: sync cache override error", "error", err)
+		return
+	}
+
+	req := api.CollectorSetCacheOverrideUsage{
+		Location: w.Location,
+	}
+	for _, s := range samples {
+		// A registered-but-idle override reports increase==0 every minute; skip so
+		// the table stays sparse (absent bucket == zero).
+		if s.Value == 0 {
+			continue
+		}
+
+		// zone:<ns>/<configmap>:<overrideID> — the override id is everything after
+		// the last ':'. Anything without one isn't a zone series; skip.
+		i := strings.LastIndexByte(s.Name, ':')
+		if i < 0 {
+			continue
+		}
+		overrideID := s.Name[i+1:]
+
+		m := reWAFRuleProject.FindStringSubmatch(overrideID)
+		if m == nil {
+			continue
+		}
+		projectID, _ := strconv.ParseInt(m[1], 10, 64)
+		if projectID == 0 {
+			continue
+		}
+
+		req.List = append(req.List, &api.CollectorCacheOverrideUsageItem{
+			ProjectID:  projectID,
+			OverrideID: overrideID,
+			Action:     s.Action,
+			Result:     s.Result,
+			Value:      s.Value,
+			At:         s.Ts,
+		})
+	}
+
+	if len(req.List) == 0 {
+		return
+	}
+
+	_, err = w.Client.Collector().SetCacheOverrideUsage(ctx, &req)
+	if err != nil {
+		slog.Error("collector: sync cache override error", "error", err)
 		return
 	}
 }
