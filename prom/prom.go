@@ -394,6 +394,93 @@ func (c *Client) GetRateLimitDecisions(startUnix, endUnix int64) ([]*RateLimitSa
 	return c.queryRateLimitMatrix(q)
 }
 
+type CacheOverrideSample struct {
+	Name   string // series name: zone:<namespace>/<configmap>:<overrideID>
+	Action string // cache|bypass
+	Result string // applied|shadow|error
+	Ts     int64  // unix second, minute-aligned bucket
+	Value  float64
+}
+
+// queryCacheOverrideMatrix runs a range query and flattens every series'
+// samples into CacheOverrideSamples, keeping the name / action / result labels —
+// queryRateLimitMatrix for parapet_cache_override_total's label set.
+func (c *Client) queryCacheOverrideMatrix(q url.Values) ([]*CacheOverrideSample, error) {
+	resp, err := c.do("/api/v1/query_range?" + q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	var p struct {
+		Status string
+		Data   struct {
+			ResultType string
+			Result     []*struct {
+				Metric map[string]string
+				Values [][]any
+			}
+		}
+	}
+	err = json.Unmarshal(resp, &p)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.Status != "success" {
+		return nil, fmt.Errorf("not ok")
+	}
+
+	var vs []*CacheOverrideSample
+	for _, r := range p.Data.Result {
+		name := r.Metric["name"]
+		action := r.Metric["action"]
+		result := r.Metric["result"]
+		if name == "" {
+			continue
+		}
+		for _, vv := range r.Values {
+			if len(vv) != 2 {
+				continue
+			}
+			ts, ok := vv[0].(float64)
+			if !ok {
+				continue
+			}
+			s, ok := vv[1].(string)
+			if !ok {
+				continue
+			}
+			f, err := strconv.ParseFloat(s, 64)
+			if err != nil {
+				continue
+			}
+			vs = append(vs, &CacheOverrideSample{
+				Name:   name,
+				Action: action,
+				Result: result,
+				Ts:     int64(ts),
+				Value:  f,
+			})
+		}
+	}
+
+	return vs, nil
+}
+
+// GetCacheOverrideDecisions pulls per-minute cache-override decision counts over
+// [startUnix, endUnix] at a 60s step — GetRateLimitDecisions for
+// parapet_cache_override_total. The name=~"zone:.+" matcher excludes the
+// platform-owned global set (named "global:<id>", which carries no project
+// prefix to attribute); zone series are named zone:<ns>/<configmap>:<overrideID>.
+func (c *Client) GetCacheOverrideDecisions(startUnix, endUnix int64) ([]*CacheOverrideSample, error) {
+	q := make(url.Values)
+	q.Set("query", `sum(increase(parapet_cache_override_total{name=~"zone:.+"}[1m])) by (name, action, result)`)
+	q.Set("start", strconv.FormatInt(startUnix, 10))
+	q.Set("end", strconv.FormatInt(endUnix, 10))
+	q.Set("step", "60")
+
+	return c.queryCacheOverrideMatrix(q)
+}
+
 // GetWAFMatches pulls per-minute WAF match counts over [startUnix, endUnix] at a
 // 60s step. increase[1m] at a 60s step tiles the window with no gaps/overlaps,
 // so summing buckets yields total hits. scope="zone" excludes the platform-owned
