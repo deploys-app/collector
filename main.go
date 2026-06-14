@@ -135,6 +135,67 @@ func (w *Worker) RunDeployment() {
 	ctx := context.Background()
 
 	w.syncDeploymentUsage(ctx)
+	w.syncStaticRequests(ctx)
+}
+
+// syncStaticRequests records per-site request rate for Static deployments,
+// which have no pod/Service and so never appear in the container/parapet
+// metrics syncDeploymentUsage reads. The shared static-gateway exposes a
+// per-site counter labeled by project SID + site name; deployment_usages is
+// keyed by numeric project id, so we resolve the SID via the location's
+// project list and write the rows under the "requests" resource (keyed by the
+// site's display name — deployment.metrics reads Static usage by display name).
+func (w *Worker) syncStaticRequests(ctx context.Context) {
+	vs, err := w.PromClient.GetStaticRequests()
+	if err != nil {
+		slog.Error("collector: get static requests error", "error", err)
+		return
+	}
+	if len(vs) == 0 {
+		return
+	}
+
+	l, err := w.Client.Collector().Location(ctx, &api.CollectorLocation{Location: w.Location})
+	if err != nil {
+		slog.Error("collector: get location data for static requests", "error", err)
+		return
+	}
+	idBySID := make(map[string]int64, len(l.Projects))
+	for _, p := range l.Projects {
+		if p.SID != "" {
+			idBySID[p.SID] = p.ID
+		}
+	}
+
+	req := api.CollectorSetDeploymentUsage{
+		Location: w.Location,
+	}
+	for _, v := range vs {
+		projectID := idBySID[v.Project]
+		if projectID == 0 {
+			continue
+		}
+
+		f, _ := strconv.ParseFloat(v.Value, 64)
+
+		req.List = append(req.List, &api.CollectorDeploymentUsageItem{
+			ProjectID:      projectID,
+			DeploymentName: v.Name,
+			Name:           "requests",
+			Pod:            v.Name,
+			Value:          f,
+			At:             v.Time,
+		})
+	}
+
+	if len(req.List) == 0 {
+		return
+	}
+
+	_, err = w.Client.Collector().SetDeploymentUsage(ctx, &req)
+	if err != nil {
+		slog.Error("collector: set static requests error", "error", err)
+	}
 }
 
 func (w *Worker) syncProjectUsage(ctx context.Context, p *api.CollectorProject) {
