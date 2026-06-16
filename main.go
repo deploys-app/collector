@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -55,6 +56,15 @@ func main() {
 		WAFLookback: config.DurationDefault("waf_lookback", 15*time.Minute),
 	}
 
+	// One-shot backfill mode: when BACKFILL_FROM is set, re-run project-usage
+	// collection for [BACKFILL_FROM, BACKFILL_TO] (UTC YYYY-MM-DD, inclusive)
+	// and exit without starting the periodic loops. Idempotent (SetProjectUsage
+	// upserts), so safe to re-run. Used to recover the cache-egress outage.
+	if from := config.String("backfill_from"); from != "" {
+		runBackfill(&w, from, config.String("backfill_to"))
+		return
+	}
+
 	stopSignal := make(chan os.Signal, 1)
 	signal.Notify(stopSignal, syscall.SIGTERM)
 
@@ -97,6 +107,36 @@ func main() {
 	}()
 
 	wg.Wait()
+}
+
+// runBackfill parses the UTC date window and drives Worker.Backfill, exiting
+// non-zero on any setup error so a misconfigured one-shot job fails loudly.
+func runBackfill(w *Worker, fromStr, toStr string) {
+	if toStr == "" {
+		slog.Error("collector: backfill_to required when backfill_from is set")
+		os.Exit(1)
+	}
+	from, err := time.ParseInLocation(time.DateOnly, fromStr, time.UTC)
+	if err != nil {
+		slog.Error("collector: invalid backfill_from", "value", fromStr, "error", err)
+		os.Exit(1)
+	}
+	to, err := time.ParseInLocation(time.DateOnly, toStr, time.UTC)
+	if err != nil {
+		slog.Error("collector: invalid backfill_to", "value", toStr, "error", err)
+		os.Exit(1)
+	}
+	if to.Before(from) {
+		slog.Error("collector: backfill_to before backfill_from", "from", fromStr, "to", toStr)
+		os.Exit(1)
+	}
+
+	slog.Info("collector: backfill start", "from", fromStr, "to", toStr, "location", w.Location)
+	if err := w.Backfill(context.Background(), from, to); err != nil {
+		slog.Error("collector: backfill error", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("collector: backfill done", "from", fromStr, "to", toStr)
 }
 
 type Worker struct {
@@ -214,15 +254,69 @@ func (w *Worker) syncProjectUsage(ctx context.Context, p *api.CollectorProject) 
 	w.syncProjectUsageDate(ctx, p, t, now)
 }
 
-func (w *Worker) syncProjectUsageDate(ctx context.Context, p *api.CollectorProject, t time.Time, now time.Time) {
-	et := t.AddDate(0, 0, 1)
-	days := "1d"
-
+// billingRangeSeconds is the number of seconds a day's averaged gauges
+// (cpu/disk/replica) are scaled by to produce a per-day total — avg_over_time
+// over the day, times this. It projects to a full day: for the in-progress
+// current day `now` is before the day end `et`, so `et` is used (a full day,
+// matching how the average is later multiplied). For a completed day, callers
+// pass now == et so this stays exactly one day. Passing a real wall-clock `now`
+// for an already-finished day would inflate this to multiple days and over-bill
+// — which is why Backfill pins now to et.
+func billingRangeSeconds(t, now, et time.Time) int64 {
 	n := now
 	if n.Before(et) {
 		n = et
 	}
-	rangeSeconds := int64(n.Sub(t) / time.Second)
+	return int64(n.Sub(t) / time.Second)
+}
+
+// Backfill re-runs project-usage collection for every day in [from, to]
+// (inclusive, UTC day boundaries). It exists to recover days the collector
+// failed to write — e.g. the cache-egress query outage, where the first
+// Prometheus error aborted syncProjectUsageDate before it wrote ANY project
+// resource for domain-having projects. SetProjectUsage upserts on
+// (project, location, date, name), so re-running is idempotent: unaffected
+// projects/days are rewritten with identical values, never double-counted.
+//
+// Recoverability is bounded by Prometheus retention — days older than retention
+// return no samples and cannot be reconstructed. Each completed day is billed
+// for its full length: passing now = et pins billingRangeSeconds to one day.
+func (w *Worker) Backfill(ctx context.Context, from, to time.Time) error {
+	l, err := w.Client.Collector().Location(ctx, &api.CollectorLocation{Location: w.Location})
+	if err != nil {
+		return fmt.Errorf("get location data: %w", err)
+	}
+
+	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
+		et := d.AddDate(0, 0, 1)
+		slog.Info("collector: backfill day", "date", d.Format(time.DateOnly), "projects", len(l.Projects))
+
+		sem := semaphore.NewWeighted(10)
+		var wg sync.WaitGroup
+		for _, p := range l.Projects {
+			if err := sem.Acquire(ctx, 1); err != nil {
+				return err
+			}
+			p := p
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer sem.Release(1)
+
+				// now = et: this is a completed day, bill its full length.
+				w.syncProjectUsageDate(ctx, p, d, et)
+			}()
+		}
+		wg.Wait()
+	}
+	return nil
+}
+
+func (w *Worker) syncProjectUsageDate(ctx context.Context, p *api.CollectorProject, t time.Time, now time.Time) {
+	et := t.AddDate(0, 0, 1)
+	days := "1d"
+
+	rangeSeconds := billingRangeSeconds(t, now, et)
 
 	req := api.CollectorSetProjectUsage{
 		Location:  w.Location,
