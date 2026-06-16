@@ -52,8 +52,10 @@ func (c *Client) queryVectorValue(q url.Values) (string, error) {
 		return "", err
 	}
 	var p struct {
-		Status string
-		Data   struct {
+		Status    string
+		ErrorType string
+		Error     string
+		Data      struct {
 			ResultType string
 			Result     []struct {
 				Value []any
@@ -66,7 +68,9 @@ func (c *Client) queryVectorValue(q url.Values) (string, error) {
 	}
 
 	if p.Status != "success" {
-		return "", fmt.Errorf("status not success")
+		// Surface Prometheus's own errorType/error so a malformed query (e.g. a
+		// bad regex escape) is diagnosable from the log instead of opaque.
+		return "", fmt.Errorf("prometheus status %q (%s): %s", p.Status, p.ErrorType, p.Error)
 	}
 
 	if len(p.Data.Result) != 1 {
@@ -865,6 +869,16 @@ func (c *Client) SummaryCacheEgress(domains []string, startTimeUnix int64, dataR
 		// No exact-match domains after wildcard filtering; nothing attributable.
 		return "0", nil
 	}
+
+	// hostPattern escapes regex metacharacters via regexp.QuoteMeta, so the
+	// pattern carries backslashes (e.g. `example\.com`). It is embedded into a
+	// PromQL double-quoted string literal, which processes Go-style escapes — a
+	// bare `\.` is an invalid escape sequence and Prometheus rejects the whole
+	// query (surfacing as "status not success"). Double the backslashes so the
+	// literal decodes back to the intended regex. (Domains can't contain `"`, so
+	// backslash is the only character needing this.)
+	pattern = strings.ReplaceAll(pattern, `\`, `\\`)
+
 	q := make(url.Values)
 	q.Set("query", fmt.Sprintf(
 		`sum(increase(parapet_cache_egress_bytes{result=~"HIT|STALE",host=~"%s"}[%s])) or vector(0)`,
