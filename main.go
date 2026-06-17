@@ -76,9 +76,7 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 
 		for {
 			w.RunProject()
@@ -89,11 +87,9 @@ func main() {
 			case <-time.After(30 * time.Minute):
 			}
 		}
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 
 		for {
 			w.RunDeployment()
@@ -104,7 +100,7 @@ func main() {
 			case <-time.After(1 * time.Minute):
 			}
 		}
-	}()
+	})
 
 	wg.Wait()
 }
@@ -162,7 +158,6 @@ func (w *Worker) RunProject() {
 			return
 		}
 
-		p := p
 		go func() {
 			defer sem.Release(1)
 
@@ -297,15 +292,12 @@ func (w *Worker) Backfill(ctx context.Context, from, to time.Time) error {
 			if err := sem.Acquire(ctx, 1); err != nil {
 				return err
 			}
-			p := p
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				defer sem.Release(1)
 
 				// now = et: this is a completed day, bill its full length.
 				w.syncProjectUsageDate(ctx, p, d, et)
-			}()
+			})
 		}
 		wg.Wait()
 	}
@@ -565,83 +557,57 @@ func (w *Worker) syncDeploymentUsage(ctx context.Context) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncVector("cpu_usage", w.PromClient.GetCPUUsage)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncVector("cpu", w.PromClient.GetCPU)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncVector("cpu_limit", w.PromClient.GetCPULimit)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncVector("memory_usage", w.PromClient.GetMemoryUsage)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncVector("memory", w.PromClient.GetMemory)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncVector("memory_limit", w.PromClient.GetMemoryLimit)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncVector("egress", w.PromClient.GetEgress)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncVector("requests", w.PromClient.GetRequests)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncDiskVector("disk_usage", w.PromClient.GetDiskUsage)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		syncDiskVector("disk_size", w.PromClient.GetDiskSize)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		w.syncWAFUsage(ctx)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		w.syncRateLimitUsage(ctx)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		w.syncCacheOverrideUsage(ctx)
-	}()
+	})
 
 	wg.Wait()
 }
