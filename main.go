@@ -400,6 +400,24 @@ func (w *Worker) syncProjectUsageDate(ctx context.Context, p *api.CollectorProje
 		})
 	}
 
+	// static egress (origin body bytes the shared static-gateway streams for this
+	// project's Static deployments — they have no pod, so the pod-based egress
+	// above never sees them). The gateway labels its counter by project SID only,
+	// so this is keyed by p.SID rather than the numeric id; the query returns 0
+	// for projects with no static traffic, resetting any stale value.
+	if p.SID != "" {
+		value, err = w.PromClient.SummaryStaticEgress(p.SID, et.Unix(), days)
+		if err != nil {
+			slog.Error("collector: get prom summary static egress error", "error", err)
+			return
+		}
+		slog.Info("collector: syncProjectUsageDate", "resource", "static_egress", "project", p.ID, "value", value)
+		req.Resources = append(req.Resources, &api.CollectorProjectUsageResource{
+			Name:  "static_egress",
+			Value: value,
+		})
+	}
+
 	// disk
 	value, err = w.PromClient.SummaryDisk(p.ID, et.Unix(), days, rangeSeconds)
 	if err != nil {

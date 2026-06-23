@@ -82,6 +82,36 @@ func TestSummaryCacheEgressEscapesHostRegex(t *testing.T) {
 	}
 }
 
+// TestSummaryStaticEgressQuery verifies the static-egress query is a daily
+// counter total (increase over the range) summed across a project's sites and
+// gateway replicas, keyed by the project SID as an exact-match label, evaluated
+// at the day boundary.
+func TestSummaryStaticEgressQuery(t *testing.T) {
+	var gotQuery, gotTime string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		gotTime = r.URL.Query().Get("time")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[{"value":[1700000000,"123"]}]}}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{Endpoint: srv.URL}
+	got, err := c.SummaryStaticEgress("acme", 1700000000, "1d")
+	if err != nil {
+		t.Fatalf("SummaryStaticEgress error: %v", err)
+	}
+	if got != "123" {
+		t.Fatalf("value = %q, want %q", got, "123")
+	}
+	if !strings.Contains(gotQuery, `sum(increase(static_gateway_response_bytes_total{project="acme"}[1d]))`) {
+		t.Fatalf("unexpected query: %s", gotQuery)
+	}
+	if gotTime != "1700000000" {
+		t.Fatalf("time = %q, want evaluation at the day boundary 1700000000", gotTime)
+	}
+}
+
 // TestQueryVectorValueSurfacesPromError verifies a non-success Prometheus
 // response carries its errorType/error into the returned error rather than the
 // old opaque "status not success".
