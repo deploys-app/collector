@@ -594,8 +594,9 @@ func (c *Client) SummaryWAFEgress(projectID int64, startTimeUnix int64, dataRang
 // used for the same reason as SummaryCacheEgress: the counter is exported by
 // multiple gateway replicas independently, so a reset on one replica's restart
 // would corrupt a cross-instance max-min difference; increase() handles per-series
-// resets before the sum. projectSID is a validated id (^[a-z0-9-]+$, no quotes or
-// regex metacharacters), so it is safe to embed as an exact-match label.
+// resets before the sum. projectSID is a validated id (api.ReValidSID:
+// ^[a-z][a-z0-9-]*[^-]$ — no quotes or regex metacharacters), so it is safe to
+// embed as an exact-match label.
 func (c *Client) SummaryStaticEgress(projectSID string, startTimeUnix int64, dataRange string) (string, error) {
 	q := make(url.Values)
 
