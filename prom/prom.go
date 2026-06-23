@@ -583,6 +583,32 @@ func (c *Client) SummaryWAFEgress(projectID int64, startTimeUnix int64, dataRang
 	return c.queryVectorValue(q)
 }
 
+// SummaryStaticEgress returns the origin body bytes the shared static-gateway
+// streamed for a project's Static deployments over the day. Static deployments
+// have no pod, so SummaryEgress (pod-based) reports nothing for them; the gateway
+// instead exports static_gateway_response_bytes_total labeled by project SID +
+// site name, and this sums increase(...[1d]) across every site (name) and gateway
+// replica for the project.
+//
+// increase() — not the max_over_time-min_over_time idiom of SummaryEgress — is
+// used for the same reason as SummaryCacheEgress: the counter is exported by
+// multiple gateway replicas independently, so a reset on one replica's restart
+// would corrupt a cross-instance max-min difference; increase() handles per-series
+// resets before the sum. projectSID is a validated id (api.ReValidSID:
+// ^[a-z][a-z0-9-]*[^-]$ — no quotes or regex metacharacters), so it is safe to
+// embed as an exact-match label.
+func (c *Client) SummaryStaticEgress(projectSID string, startTimeUnix int64, dataRange string) (string, error) {
+	q := make(url.Values)
+
+	q.Set("query", fmt.Sprintf(
+		`sum(increase(static_gateway_response_bytes_total{project="%s"}[%s])) or vector(0)`,
+		projectSID, dataRange,
+	))
+	q.Set("time", strconv.FormatInt(startTimeUnix, 10))
+
+	return c.queryVectorValue(q)
+}
+
 func (c *Client) SummaryDisk(projectID int64, startTimeUnix int64, dataRange string, rangeSecond int64) (string, error) {
 	q := make(url.Values)
 
