@@ -485,6 +485,104 @@ func (c *Client) GetCacheOverrideDecisions(startUnix, endUnix int64) ([]*CacheOv
 	return c.queryCacheOverrideMatrix(q)
 }
 
+// CacheResultSample is one (host, result) per-minute edge response-cache bucket —
+// a request count (parapet_cache_total) or a byte count (parapet_cache_egress_bytes),
+// depending on which query produced it.
+type CacheResultSample struct {
+	Host   string // request Host (bounded by the edge's knownHost oracle; "other" for unknown)
+	Result string // HIT|MISS|STALE|STALE_ERROR|BYPASS (cache_total) or HIT|STALE|MISS (cache_egress)
+	Ts     int64  // unix second, minute-aligned bucket
+	Value  float64
+}
+
+// queryHostResultMatrix runs a range query and flattens every series' samples
+// into CacheResultSamples, keeping the host / result labels — queryCacheOverrideMatrix
+// for the cache outcome metrics' (host, result) label set.
+func (c *Client) queryHostResultMatrix(q url.Values) ([]*CacheResultSample, error) {
+	resp, err := c.do("/api/v1/query_range?" + q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	var p struct {
+		Status string
+		Data   struct {
+			ResultType string
+			Result     []*struct {
+				Metric map[string]string
+				Values [][]any
+			}
+		}
+	}
+	err = json.Unmarshal(resp, &p)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.Status != "success" {
+		return nil, fmt.Errorf("not ok")
+	}
+
+	var vs []*CacheResultSample
+	for _, r := range p.Data.Result {
+		host := r.Metric["host"]
+		result := r.Metric["result"]
+		if host == "" || result == "" {
+			continue
+		}
+		for _, vv := range r.Values {
+			if len(vv) != 2 {
+				continue
+			}
+			ts, ok := vv[0].(float64)
+			if !ok {
+				continue
+			}
+			s, ok := vv[1].(string)
+			if !ok {
+				continue
+			}
+			f, err := strconv.ParseFloat(s, 64)
+			if err != nil {
+				continue
+			}
+			vs = append(vs, &CacheResultSample{
+				Host:   host,
+				Result: result,
+				Ts:     int64(ts),
+				Value:  f,
+			})
+		}
+	}
+
+	return vs, nil
+}
+
+// GetCacheResultRequests pulls per-minute edge response-cache request counts by
+// (host, result) over [startUnix, endUnix] at a 60s step, from parapet_cache_total
+// (the per-request cache-outcome counter; result ∈ HIT|MISS|STALE|STALE_ERROR|BYPASS).
+func (c *Client) GetCacheResultRequests(startUnix, endUnix int64) ([]*CacheResultSample, error) {
+	q := make(url.Values)
+	q.Set("query", `sum(increase(parapet_cache_total[1m])) by (host, result)`)
+	q.Set("start", strconv.FormatInt(startUnix, 10))
+	q.Set("end", strconv.FormatInt(endUnix, 10))
+	q.Set("step", "60")
+
+	return c.queryHostResultMatrix(q)
+}
+
+// GetCacheResultBytes pulls per-minute edge response-cache bytes served by
+// (host, result) over [startUnix, endUnix] at a 60s step, from
+// parapet_cache_egress_bytes (result ∈ HIT|STALE|MISS; bypass is not recorded).
+func (c *Client) GetCacheResultBytes(startUnix, endUnix int64) ([]*CacheResultSample, error) {
+	q := make(url.Values)
+	q.Set("query", `sum(increase(parapet_cache_egress_bytes[1m])) by (host, result)`)
+	q.Set("start", strconv.FormatInt(startUnix, 10))
+	q.Set("end", strconv.FormatInt(endUnix, 10))
+	q.Set("step", "60")
+
+	return c.queryHostResultMatrix(q)
+}
+
 // GetWAFMatches pulls per-minute WAF match counts over [startUnix, endUnix] at a
 // 60s step. increase[1m] at a 60s step tiles the window with no gaps/overlaps,
 // so summing buckets yields total hits. scope="zone" excludes the platform-owned

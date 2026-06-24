@@ -633,6 +633,10 @@ func (w *Worker) syncDeploymentUsage(ctx context.Context) {
 		w.syncCacheOverrideUsage(ctx)
 	})
 
+	wg.Go(func() {
+		w.syncCacheResultUsage(ctx)
+	})
+
 	wg.Wait()
 }
 
@@ -835,6 +839,133 @@ func (w *Worker) syncCacheOverrideUsage(ctx context.Context) {
 	_, err = w.Client.Collector().SetCacheOverrideUsage(ctx, &req)
 	if err != nil {
 		slog.Error("collector: sync cache override error", "error", err)
+		return
+	}
+}
+
+// normalizeCacheResult folds parapet's five cache outcomes into the four the
+// chart shows: STALE_ERROR (a stale-if-error serve, "STALE" on the wire) joins
+// STALE; HIT/MISS/STALE/BYPASS pass through; anything else (the edge's "other"
+// host-collapse sentinel never appears on result, but cache_egress can emit an
+// unexpected result label) is dropped.
+func normalizeCacheResult(r string) string {
+	switch r {
+	case "HIT", "MISS", "STALE", "BYPASS":
+		return r
+	case "STALE_ERROR":
+		return "STALE"
+	default:
+		return ""
+	}
+}
+
+// syncCacheResultUsage collects per-minute edge response-cache outcome counts —
+// requests (parapet_cache_total) and bytes (parapet_cache_egress_bytes), both
+// labeled by (host, result) — and upserts them per (project, result) minute
+// bucket. Unlike the WAF/override syncs (which attribute by a project-prefixed
+// id), cache outcomes attribute by the request Host: we resolve host→project via
+// the location's routed domains, the same oracle SummaryCacheEgress uses. Same
+// lookback / idempotent-upsert contract as syncCacheOverrideUsage.
+func (w *Worker) syncCacheResultUsage(ctx context.Context) {
+	slog.Info("collector: sync cache result")
+
+	l, err := w.Client.Collector().Location(ctx, &api.CollectorLocation{Location: w.Location})
+	if err != nil {
+		slog.Error("collector: sync cache result error", "error", err)
+		return
+	}
+	// host→project from routed domains. Wildcard domains are skipped: the edge
+	// host label is an exact request Host, and a "*.example.com" route can't be
+	// matched to a concrete subdomain without risking cross-project attribution
+	// (same reasoning as hostPattern in the project cache-egress sync).
+	idByHost := make(map[string]int64)
+	for _, p := range l.Projects {
+		for _, d := range p.Domains {
+			if strings.HasPrefix(d, "*.") {
+				continue
+			}
+			idByHost[d] = p.ID
+		}
+	}
+	if len(idByHost) == 0 {
+		return
+	}
+
+	lookback := w.WAFLookback
+	if lookback <= 0 {
+		lookback = 15 * time.Minute
+	}
+	end := time.Now().Truncate(time.Minute).Unix()
+	start := end - int64(lookback/time.Second)
+
+	type key struct {
+		projectID int64
+		result    string
+		ts        int64
+	}
+	buckets := make(map[key]*api.CollectorCacheResultUsageItem)
+	get := func(projectID int64, result string, ts int64) *api.CollectorCacheResultUsageItem {
+		k := key{projectID, result, ts}
+		it := buckets[k]
+		if it == nil {
+			it = &api.CollectorCacheResultUsageItem{ProjectID: projectID, Result: result, At: ts}
+			buckets[k] = it
+		}
+		return it
+	}
+
+	reqs, err := w.PromClient.GetCacheResultRequests(start, end)
+	if err != nil {
+		slog.Error("collector: sync cache result requests error", "error", err)
+		return
+	}
+	for _, s := range reqs {
+		if s.Value == 0 {
+			continue
+		}
+		projectID := idByHost[s.Host]
+		if projectID == 0 {
+			continue
+		}
+		result := normalizeCacheResult(s.Result)
+		if result == "" {
+			continue
+		}
+		get(projectID, result, s.Ts).Requests += s.Value
+	}
+
+	bytesSamples, err := w.PromClient.GetCacheResultBytes(start, end)
+	if err != nil {
+		slog.Error("collector: sync cache result bytes error", "error", err)
+		return
+	}
+	for _, s := range bytesSamples {
+		if s.Value == 0 {
+			continue
+		}
+		projectID := idByHost[s.Host]
+		if projectID == 0 {
+			continue
+		}
+		result := normalizeCacheResult(s.Result)
+		if result == "" {
+			continue
+		}
+		get(projectID, result, s.Ts).Bytes += s.Value
+	}
+
+	if len(buckets) == 0 {
+		return
+	}
+
+	req := api.CollectorSetCacheResultUsage{Location: w.Location}
+	for _, it := range buckets {
+		req.List = append(req.List, it)
+	}
+
+	_, err = w.Client.Collector().SetCacheResultUsage(ctx, &req)
+	if err != nil {
+		slog.Error("collector: sync cache result error", "error", err)
 		return
 	}
 }
