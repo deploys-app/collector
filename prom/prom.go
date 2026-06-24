@@ -733,32 +733,41 @@ func (c *Client) GetMemoryLimit() ([]*PodVector, error) {
 	return c.queryPodVectors(q)
 }
 
+// GetEgress samples each pod's transmit bytes over the last minute. increase()
+// (not rate()) makes the value a per-minute byte total: the deployment loop runs
+// every minute, so consecutive [1m] samples tile the timeline and the apiserver
+// sums them per bucket to chart total bytes transferred — the same per-minute
+// count contract the WAF/ratelimit/cache syncs use. (Was rate() = bytes/sec.)
 func (c *Client) GetEgress() ([]*PodVector, error) {
 	q := make(url.Values)
 
 	q.Set("query", fmt.Sprintf(
-		`rate(container_network_transmit_bytes_total{namespace="%s"}[1m])`,
+		`increase(container_network_transmit_bytes_total{namespace="%s"}[1m])`,
 		c.Namespace,
 	))
 
 	return c.queryPodVectors(q)
 }
 
+// GetRequests sums each service's request count over the last minute. increase()
+// (not rate()) makes the value a per-minute request total so the apiserver can
+// sum buckets into total requests served; see GetEgress for the tiling contract.
+// (Was rate() = requests/sec.)
 func (c *Client) GetRequests() ([]*PodVector, error) {
 	q := make(url.Values)
 
 	q.Set("query", fmt.Sprintf(
-		`sum(rate(parapet_requests{ingress_namespace="%s"}[1m])) by (service_name)`,
+		`sum(increase(parapet_requests{ingress_namespace="%s"}[1m])) by (service_name)`,
 		c.Namespace,
 	))
 
 	return c.queryPodVectors(q)
 }
 
-// StaticRequestVector is one (project SID, site name) request-rate sample from
-// the shared static-gateway. Static deployments have no pod/Service, so their
-// request volume is attributed by the gateway's own per-site labels instead of
-// the pod/service_name labels the container metrics use.
+// StaticRequestVector is one (project SID, site name) per-minute request-count
+// sample from the shared static-gateway. Static deployments have no pod/Service,
+// so their request volume is attributed by the gateway's own per-site labels
+// instead of the pod/service_name labels the container metrics use.
 type StaticRequestVector struct {
 	Project string // project SID (e.g. "acme")
 	Name    string // site / deployment display name
@@ -812,13 +821,15 @@ func (c *Client) queryStaticRequestVectors(q url.Values) ([]*StaticRequestVector
 	return vs, nil
 }
 
-// GetStaticRequests returns the per-site request rate (rps) served by the
-// shared static-gateway, summed across gateway replicas and grouped by the
-// project SID + site name the gateway labels each request with.
+// GetStaticRequests returns the per-site request count over the last minute
+// served by the shared static-gateway, summed across gateway replicas and
+// grouped by the project SID + site name the gateway labels each request with.
+// increase() (not rate()) keeps these per-minute counts consistent with the
+// pod-backed GetRequests, since both land in the same "requests" chart series.
 func (c *Client) GetStaticRequests() ([]*StaticRequestVector, error) {
 	q := make(url.Values)
 
-	q.Set("query", `sum(rate(static_gateway_requests_total[1m])) by (project, name)`)
+	q.Set("query", `sum(increase(static_gateway_requests_total[1m])) by (project, name)`)
 
 	return c.queryStaticRequestVectors(q)
 }

@@ -173,8 +173,8 @@ func (w *Worker) RunDeployment() {
 	w.syncStaticRequests(ctx)
 }
 
-// syncStaticRequests records per-site request rate for Static deployments,
-// which have no pod/Service and so never appear in the container/parapet
+// syncStaticRequests records the per-minute per-site request count for Static
+// deployments, which have no pod/Service and so never appear in the container/parapet
 // metrics syncDeploymentUsage reads. The shared static-gateway exposes a
 // per-site counter labeled by project SID + site name; deployment_usages is
 // keyed by numeric project id, so we resolve the SID via the location's
