@@ -47,3 +47,33 @@ func TestBillingRangeSeconds(t *testing.T) {
 		})
 	}
 }
+
+// TestNormalizeCacheResult pins the canonical edge cache-result set that the
+// cache-result usage sync attributes to projects. The mapping is billing-
+// relevant: a result that maps to "" is dropped (not counted), so STALE_ERROR
+// MUST fold into STALE rather than vanish, and only these exact labels count.
+func TestNormalizeCacheResult(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		// Canonical results pass through unchanged.
+		{"HIT", "HIT"},
+		{"MISS", "MISS"},
+		{"STALE", "STALE"},
+		{"BYPASS", "BYPASS"},
+		// STALE_ERROR is counted, folded into STALE (must not be dropped).
+		{"STALE_ERROR", "STALE"},
+		// Anything else maps to "" and is dropped by the caller — including
+		// wrong case and empty, so a new/unexpected label is never mis-bucketed.
+		{"hit", ""},
+		{"EXPIRED", ""},
+		{"REVALIDATED", ""},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		if got := normalizeCacheResult(tc.in); got != tc.want {
+			t.Errorf("normalizeCacheResult(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
