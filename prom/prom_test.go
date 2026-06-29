@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -169,5 +170,35 @@ func TestQueryVectorValueSurfacesPromError(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not contain %q", err.Error(), want)
 		}
+	}
+}
+
+// TestQueryPodVectorsSkipsMalformedValue guards that a Prometheus result whose
+// value tuple doesn't match the expected [number, string] shape is skipped
+// rather than panicking on an unchecked type assertion (queryPodVectors,
+// queryVolumeVectors and queryStaticRequestVectors now match the ok-checked
+// pattern the rest of the file already uses).
+func TestQueryPodVectorsSkipsMalformedValue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// First result is well-formed; the second has a non-spec value tuple
+		// (time as string, value as number) that must be skipped, not panic.
+		_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[`+
+			`{"metric":{"pod":"good"},"value":[1700000000,"42"]},`+
+			`{"metric":{"pod":"bad"},"value":["not-a-number",99]}`+
+			`]}}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{Endpoint: srv.URL}
+	vs, err := c.queryPodVectors(url.Values{})
+	if err != nil {
+		t.Fatalf("queryPodVectors error: %v", err)
+	}
+	if len(vs) != 1 {
+		t.Fatalf("got %d vectors, want 1 (the malformed entry must be skipped, not panic)", len(vs))
+	}
+	if vs[0].Pod != "good" || vs[0].Value != "42" {
+		t.Fatalf("unexpected vector: %+v", vs[0])
 	}
 }
