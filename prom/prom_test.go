@@ -112,6 +112,43 @@ func TestSummaryStaticEgressQuery(t *testing.T) {
 	}
 }
 
+// TestSummaryMemoryQuery guards that memory is billed with the same gap-robust
+// avg_over_time(...) * rangeSecond formula as SummaryCPU — both measure the
+// kube_pod_container_resource_requests gauge, so both should compute
+// request-seconds the same way. The previous sum_over_time(...) * 15 hardcoded
+// the scrape interval and under-counted (under-billed) on scrape gaps.
+func TestSummaryMemoryQuery(t *testing.T) {
+	var gotQuery, gotTime string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		gotTime = r.URL.Query().Get("time")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[{"value":[1700000000,"99"]}]}}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{Namespace: "deploys", Endpoint: srv.URL}
+	got, err := c.SummaryMemory(7, 1700000000, "1d", 86400)
+	if err != nil {
+		t.Fatalf("SummaryMemory error: %v", err)
+	}
+	if got != "99" {
+		t.Fatalf("value = %q, want %q", got, "99")
+	}
+	if !strings.Contains(gotQuery, `sum(avg_over_time(kube_pod_container_resource_requests{namespace="deploys",resource="memory",pod=~".*-7-[^-]+-[^-]+$"}[1d]))`) {
+		t.Fatalf("memory query not using the avg_over_time gauge integral: %s", gotQuery)
+	}
+	if !strings.Contains(gotQuery, `) * 86400`) {
+		t.Fatalf("memory query not scaled by rangeSecond: %s", gotQuery)
+	}
+	if strings.Contains(gotQuery, "sum_over_time") || strings.Contains(gotQuery, "* 15") {
+		t.Fatalf("memory query still uses the gap-fragile sum_over_time/scrape-interval form: %s", gotQuery)
+	}
+	if gotTime != "1700000000" {
+		t.Fatalf("time = %q, want 1700000000", gotTime)
+	}
+}
+
 // TestQueryVectorValueSurfacesPromError verifies a non-success Prometheus
 // response carries its errorType/error into the returned error rather than the
 // old opaque "status not success".
