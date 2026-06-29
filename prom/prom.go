@@ -632,10 +632,13 @@ func (c *Client) SummaryCPU(projectID int64, startTimeUnix int64, dataRange stri
 func (c *Client) SummaryMemory(projectID int64, startTimeUnix int64, dataRange string, rangeSecond int64) (string, error) {
 	q := make(url.Values)
 
-	// 15 = scrape_interval
+	// Average request over the window times the range = request-seconds, matching
+	// SummaryCPU (same kube_pod_container_resource_requests gauge). Gap-robust:
+	// avg_over_time is independent of sample count, unlike the previous
+	// sum_over_time(...) * scrape_interval form, which under-counted on scrape gaps.
 	q.Set("query", fmt.Sprintf(
-		`(sum(sum_over_time(kube_pod_container_resource_requests{namespace="%s",resource="memory",pod=~".*-%d-[^-]+-[^-]+$"}[%s])) or vector(0)) * 15`,
-		c.Namespace, projectID, dataRange,
+		`(sum(avg_over_time(kube_pod_container_resource_requests{namespace="%s",resource="memory",pod=~".*-%d-[^-]+-[^-]+$"}[%s])) or vector(0)) * %d`,
+		c.Namespace, projectID, dataRange, rangeSecond,
 	))
 	q.Set("time", strconv.FormatInt(startTimeUnix, 10))
 
