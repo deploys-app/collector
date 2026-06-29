@@ -132,11 +132,19 @@ func (c *Client) queryPodVectors(q url.Values) ([]*PodVector, error) {
 			continue
 		}
 
+		ts, ok := x.Value[0].(float64)
+		if !ok {
+			continue
+		}
+		val, ok := x.Value[1].(string)
+		if !ok {
+			continue
+		}
 		vs = append(vs, &PodVector{
 			Pod:     pod,
 			Service: service,
-			Time:    int64(x.Value[0].(float64)),
-			Value:   x.Value[1].(string),
+			Time:    int64(ts),
+			Value:   val,
 		})
 	}
 
@@ -185,10 +193,18 @@ func (c *Client) queryVolumeVectors(q url.Values) ([]*VolumeVector, error) {
 			continue
 		}
 
+		ts, ok := x.Value[0].(float64)
+		if !ok {
+			continue
+		}
+		val, ok := x.Value[1].(string)
+		if !ok {
+			continue
+		}
 		vs = append(vs, &VolumeVector{
 			Volume: volume,
-			Time:   int64(x.Value[0].(float64)),
-			Value:  x.Value[1].(string),
+			Time:   int64(ts),
+			Value:  val,
 		})
 	}
 
@@ -911,11 +927,19 @@ func (c *Client) queryStaticRequestVectors(q url.Values) ([]*StaticRequestVector
 			continue
 		}
 
+		ts, ok := x.Value[0].(float64)
+		if !ok {
+			continue
+		}
+		val, ok := x.Value[1].(string)
+		if !ok {
+			continue
+		}
 		vs = append(vs, &StaticRequestVector{
 			Project: project,
 			Name:    name,
-			Time:    int64(x.Value[0].(float64)),
-			Value:   x.Value[1].(string),
+			Time:    int64(ts),
+			Value:   val,
 		})
 	}
 
