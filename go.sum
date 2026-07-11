@@ -11,6 +11,8 @@ github.com/deploys-app/api v0.0.0-20260614120356-b70242a70a75 h1:UJGeXy76I+Y5qJi
 github.com/deploys-app/api v0.0.0-20260614120356-b70242a70a75/go.mod h1:X70UJs5awlRV4Cmn0FPJAgEbn4N933K8YgSKc1y9aD8=
 github.com/deploys-app/api v0.0.0-20260624110901-233c9fd3f670 h1:qq+eRvrSBs3+t3ujPzYha3578uIO4t4sl6YEZYbYyZ8=
 github.com/deploys-app/api v0.0.0-20260624110901-233c9fd3f670/go.mod h1:X70UJs5awlRV4Cmn0FPJAgEbn4N933K8YgSKc1y9aD8=
+github.com/deploys-app/api v0.0.0-20260711011307-380d9eb5c22f h1:3U7WNutV61z3R9zuBxd0z18wHJDtzkn9j4fRcG23Pw8=
+github.com/deploys-app/api v0.0.0-20260711011307-380d9eb5c22f/go.mod h1:X70UJs5awlRV4Cmn0FPJAgEbn4N933K8YgSKc1y9aD8=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/joho/godotenv v1.5.1 h1:7eLL/+HRGLY0ldzfGMeQkb7vMd0as4CfYvUVzLqw0N0=

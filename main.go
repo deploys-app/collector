@@ -102,6 +102,43 @@ func main() {
 		}
 	})
 
+	// WAF events poll loop (SPEC-waf-events §F). Runs only when BOTH envs are
+	// set — the endpoint itself only starts when the controller has the same
+	// token — so this binary can ship in any deploy order; unset = inert.
+	// Its own loop (not RunDeployment) because the per-pod cursors are stateful
+	// across ticks and the cadence is independently configurable.
+	target, wafEventsToken := config.String("waf_events_target"), config.String("waf_events_token")
+	if (target == "") != (wafEventsToken == "") {
+		// Half-configured is almost certainly a rollout mistake (e.g. Secret wired
+		// but target typo'd); staying silent would only surface as an empty
+		// waf_events table, so warn — but stay inert, matching the deploy-order
+		// contract above.
+		slog.Warn("collector: waf events disabled: need both waf_events_target and waf_events_token, got only one")
+	}
+	if target != "" && wafEventsToken != "" {
+		s := &wafEventsSyncer{
+			Target:     target,
+			Token:      wafEventsToken,
+			Location:   w.Location,
+			Client:     w.Client,
+			HTTPClient: httpClient,
+		}
+		interval := config.DurationDefault("waf_events_interval", 60*time.Second)
+
+		wg.Go(func() {
+
+			for {
+				s.Run(context.Background())
+
+				select {
+				case <-stop:
+					return
+				case <-time.After(interval):
+				}
+			}
+		})
+	}
+
 	wg.Wait()
 }
 
