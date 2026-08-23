@@ -614,6 +614,10 @@ func (w *Worker) syncDeploymentUsage(ctx context.Context) {
 	})
 
 	wg.Go(func() {
+		syncVector("replica", w.PromClient.GetReplica)
+	})
+
+	wg.Go(func() {
 		syncDiskVector("disk_usage", w.PromClient.GetDiskUsage)
 	})
 

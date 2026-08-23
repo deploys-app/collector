@@ -125,6 +125,9 @@ func (c *Client) queryPodVectors(q url.Values) ([]*PodVector, error) {
 	for _, x := range rs {
 		pod := x.Metric["pod"]
 		service := x.Metric["service_name"]
+		if service == "" {
+			service = x.Metric["deployment"]
+		}
 		if len(x.Value) != 2 {
 			continue
 		}
@@ -844,6 +847,21 @@ func (c *Client) GetMemoryLimit() ([]*PodVector, error) {
 
 	q.Set("query", fmt.Sprintf(
 		`kube_pod_container_resource_limits{namespace="%s",resource="memory"} > 0`,
+		c.Namespace,
+	))
+
+	return c.queryPodVectors(q)
+}
+
+// GetReplica is the per-deployment available-replica gauge. kube-state-metrics
+// labels the series `deployment` (`{kubeName}-{projectID}`), which
+// queryPodVectors maps onto Service. sum by (deployment) keeps one sample per
+// object; do not `or vector(0)` — that scalar has no deployment label.
+func (c *Client) GetReplica() ([]*PodVector, error) {
+	q := make(url.Values)
+
+	q.Set("query", fmt.Sprintf(
+		`sum by (deployment) (kube_deployment_status_replicas_available{namespace="%s"})`,
 		c.Namespace,
 	))
 
