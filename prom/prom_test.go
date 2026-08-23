@@ -202,3 +202,55 @@ func TestQueryPodVectorsSkipsMalformedValue(t *testing.T) {
 		t.Fatalf("unexpected vector: %+v", vs[0])
 	}
 }
+
+func TestGetReplica(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[`+
+			`{"metric":{"deployment":"web-12"},"value":[1700000000,"3"]}`+
+			`]}}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{Endpoint: srv.URL, Namespace: "ns"}
+	vs, err := c.GetReplica()
+	if err != nil {
+		t.Fatalf("GetReplica error: %v", err)
+	}
+	if len(vs) != 1 {
+		t.Fatalf("got %d vectors, want 1", len(vs))
+	}
+	if vs[0].Service != "web-12" || vs[0].Pod != "" || vs[0].Value != "3" {
+		t.Fatalf("unexpected vector: %+v", vs[0])
+	}
+	if !strings.Contains(gotQuery, `sum by (deployment) (kube_deployment_status_replicas_available{namespace="ns"})`) {
+		t.Fatalf("unexpected query: %s", gotQuery)
+	}
+	if strings.Contains(gotQuery, "or vector(0)") {
+		t.Fatalf("GetReplica must not use or vector(0): %s", gotQuery)
+	}
+}
+
+func TestQueryPodVectorsKeepsPodLabel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[`+
+			`{"metric":{"pod":"web-12-abc-def"},"value":[1700000000,"0.5"]}`+
+			`]}}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{Endpoint: srv.URL, Namespace: "ns"}
+	vs, err := c.GetCPUUsage()
+	if err != nil {
+		t.Fatalf("GetCPUUsage error: %v", err)
+	}
+	if len(vs) != 1 {
+		t.Fatalf("got %d vectors, want 1", len(vs))
+	}
+	if vs[0].Pod != "web-12-abc-def" || vs[0].Service != "" || vs[0].Value != "0.5" {
+		t.Fatalf("pod-labeled sample must still populate Pod: %+v", vs[0])
+	}
+}
