@@ -741,11 +741,10 @@ func (w *Worker) syncRateLimitUsage(ctx context.Context) {
 
 		// zone:<ns>/<configmap>:<limitID> — the limit id is everything after the
 		// last ':'. Anything without one isn't a zone series; skip.
-		i := strings.LastIndexByte(s.Name, ':')
-		if i < 0 {
+		_, limitID, ok := strings.CutLast(s.Name, ":")
+		if !ok {
 			continue
 		}
-		limitID := s.Name[i+1:]
 
 		m := reWAFRuleProject.FindStringSubmatch(limitID)
 		if m == nil {
@@ -811,11 +810,10 @@ func (w *Worker) syncCacheOverrideUsage(ctx context.Context) {
 
 		// zone:<ns>/<configmap>:<overrideID> — the override id is everything after
 		// the last ':'. Anything without one isn't a zone series; skip.
-		i := strings.LastIndexByte(s.Name, ':')
-		if i < 0 {
+		_, overrideID, ok := strings.CutLast(s.Name, ":")
+		if !ok {
 			continue
 		}
-		overrideID := s.Name[i+1:]
 
 		m := reWAFRuleProject.FindStringSubmatch(overrideID)
 		if m == nil {
