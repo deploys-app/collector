@@ -171,6 +171,7 @@ func (w *Worker) RunDeployment() {
 
 	w.syncDeploymentUsage(ctx)
 	w.syncStaticRequests(ctx)
+	w.syncCustomMetrics(ctx)
 }
 
 // syncStaticRequests records the per-minute per-site request count for Static

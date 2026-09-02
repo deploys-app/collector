@@ -4,7 +4,9 @@ go 1.27.0
 
 require (
 	github.com/acoshift/configfile v1.9.0
-	github.com/deploys-app/api v0.0.0-20260624110901-233c9fd3f670
+	github.com/deploys-app/api v0.0.0-20260902074923-039b9e7c2543
+	github.com/prometheus/client_model v0.6.2
+	github.com/prometheus/common v0.71.0
 	golang.org/x/sync v0.11.0
 )
 
@@ -15,7 +17,9 @@ require (
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/moonrhythm/validator v1.3.0 // indirect
+	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/rogpeppe/go-internal v1.11.0 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
