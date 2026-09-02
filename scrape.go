@@ -239,6 +239,21 @@ func (w *Worker) syncCustomMetrics(ctx context.Context) {
 	wg.Wait()
 }
 
+func samplesToUsageItems(projectID, sourceID int64, samples []scrapedSample, at int64) []*api.CollectorCustomUsageItem {
+	out := make([]*api.CollectorCustomUsageItem, 0, len(samples))
+	for _, s := range samples {
+		out = append(out, &api.CollectorCustomUsageItem{
+			ProjectID: projectID,
+			SourceID:  sourceID,
+			Series:    s.Series,
+			Type:      s.Type,
+			Value:     s.Value,
+			At:        at,
+		})
+	}
+	return out
+}
+
 func (w *Worker) scrapeMetricSource(ctx context.Context, item *api.CollectorMetricSource) {
 	if item == nil || item.URL == "" {
 		return
@@ -265,16 +280,7 @@ func (w *Worker) scrapeMetricSource(ctx context.Context, item *api.CollectorMetr
 		req.Truncated = true
 	}
 	at := time.Now().Unix()
-	req.List = make([]*api.CollectorCustomUsageItem, 0, len(res.Samples))
-	for _, s := range res.Samples {
-		req.List = append(req.List, &api.CollectorCustomUsageItem{
-			ProjectID: item.ProjectID,
-			SourceID:  item.SourceID,
-			Series:    s.Series,
-			Value:     s.Value,
-			At:        at,
-		})
-	}
+	req.List = samplesToUsageItems(item.ProjectID, item.SourceID, res.Samples, at)
 	if _, err := w.Client.Collector().SetCustomUsage(ctx, &req); err != nil {
 		slog.Error("collector: set custom usage error",
 			"project", item.ProjectID, "source", item.SourceID, "name", item.Name, "error", err)

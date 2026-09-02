@@ -138,6 +138,26 @@ rpc_duration_seconds_count 10
 	})
 }
 
+func TestSamplesToUsageItemsCopiesType(t *testing.T) {
+	samples := []scrapedSample{
+		{Series: "up", Type: api.MetricSourceSeriesTypeGauge, Value: 1},
+		{Series: "jobs_total", Type: api.MetricSourceSeriesTypeCounter, Value: 9},
+	}
+	got := samplesToUsageItems(7, 11, samples, 1000)
+	if len(got) != 2 {
+		t.Fatalf("len = %d", len(got))
+	}
+	if got[0].Type != api.MetricSourceSeriesTypeGauge || got[0].Series != "up" || got[0].Value != 1 {
+		t.Fatalf("gauge item = %+v", got[0])
+	}
+	if got[1].Type != api.MetricSourceSeriesTypeCounter || got[1].Series != "jobs_total" {
+		t.Fatalf("counter item = %+v", got[1])
+	}
+	if got[1].ProjectID != 7 || got[1].SourceID != 11 || got[1].At != 1000 {
+		t.Fatalf("ids = %+v", got[1])
+	}
+}
+
 func TestParsePromMetricsSeriesCap(t *testing.T) {
 	var b strings.Builder
 	for i := range api.MetricSourceMaxSeries + 1 {
