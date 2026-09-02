@@ -245,24 +245,26 @@ func (w *Worker) scrapeMetricSource(ctx context.Context, item *api.CollectorMetr
 	}
 
 	res := scrapeMetricURL(ctx, item.URL)
+	req := api.CollectorSetCustomUsage{
+		Location: w.Location,
+	}
 	if res.Err != nil {
 		slog.Error("collector: scrape metric source error",
 			"project", item.ProjectID, "source", item.SourceID, "name", item.Name, "error", res.Err)
-		return
-	}
-	if len(res.Samples) == 0 {
+		req.LastError = res.Err.Error()
+		if _, err := w.Client.Collector().SetCustomUsage(ctx, &req); err != nil {
+			slog.Error("collector: set custom usage error",
+				"project", item.ProjectID, "source", item.SourceID, "name", item.Name, "error", err)
+		}
 		return
 	}
 	if res.Truncated {
 		slog.Warn("collector: metric source truncated",
 			"project", item.ProjectID, "source", item.SourceID, "name", item.Name, "series", len(res.Samples))
+		req.Truncated = true
 	}
-
 	at := time.Now().Unix()
-	req := api.CollectorSetCustomUsage{
-		Location: w.Location,
-		List:     make([]*api.CollectorCustomUsageItem, 0, len(res.Samples)),
-	}
+	req.List = make([]*api.CollectorCustomUsageItem, 0, len(res.Samples))
 	for _, s := range res.Samples {
 		req.List = append(req.List, &api.CollectorCustomUsageItem{
 			ProjectID: item.ProjectID,
