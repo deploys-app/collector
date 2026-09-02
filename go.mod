@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/acoshift/configfile v1.9.0
-	github.com/deploys-app/api v0.0.0-20260902081131-5cbc079a1d23
+	github.com/deploys-app/api v0.0.0-20260902081931-0522b7474c37
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.71.0
 	golang.org/x/sync v0.11.0

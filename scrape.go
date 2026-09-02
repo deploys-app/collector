@@ -247,6 +247,7 @@ func (w *Worker) scrapeMetricSource(ctx context.Context, item *api.CollectorMetr
 	res := scrapeMetricURL(ctx, item.URL)
 	req := api.CollectorSetCustomUsage{
 		Location: w.Location,
+		SourceID: item.SourceID,
 	}
 	if res.Err != nil {
 		slog.Error("collector: scrape metric source error",
