@@ -655,9 +655,18 @@ func (c *Client) SummaryMemory(projectID int64, startTimeUnix int64, dataRange s
 	// SummaryCPU (same kube_pod_container_resource_requests gauge). Gap-robust:
 	// avg_over_time is independent of sample count, unlike the previous
 	// sum_over_time(...) * scrape_interval form, which under-counted on scrape gaps.
+	//
+	// kube-state-metrics keeps exporting the request until the pod object is
+	// deleted, so a finished CronJob (kept up to TTLSecondsAfterFinished) would
+	// bill the whole window. phase="Running" is 1 or 0 on every scrape; its
+	// average is the fraction of samples that were actually Running. Multiply
+	// the two averages — do not filter phase == 1 first, or the 0 samples
+	// disappear and avg_over_time ignores the finished time again. The request
+	// on one pod series is constant, so avg(request) * avg(phase) is the
+	// running integral.
 	q.Set("query", fmt.Sprintf(
-		`(sum(avg_over_time(kube_pod_container_resource_requests{namespace="%s",resource="memory",pod=~".*-%d-[^-]+-[^-]+$"}[%s])) or vector(0)) * %d`,
-		c.Namespace, projectID, dataRange, rangeSecond,
+		`(sum(avg_over_time(kube_pod_container_resource_requests{namespace="%s",resource="memory",pod=~".*-%d-[^-]+-[^-]+$"}[%s]) * on(namespace, pod) group_left() avg_over_time(kube_pod_status_phase{namespace="%s",phase="Running",pod=~".*-%d-[^-]+-[^-]+$"}[%s])) or vector(0)) * %d`,
+		c.Namespace, projectID, dataRange, c.Namespace, projectID, dataRange, rangeSecond,
 	))
 	q.Set("time", strconv.FormatInt(startTimeUnix, 10))
 
