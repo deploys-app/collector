@@ -651,21 +651,26 @@ func (c *Client) SummaryCPU(projectID int64, startTimeUnix int64, dataRange stri
 func (c *Client) SummaryMemory(projectID int64, startTimeUnix int64, dataRange string, rangeSecond int64) (string, error) {
 	q := make(url.Values)
 
-	// Average request over the window times the range = request-seconds, matching
-	// SummaryCPU (same kube_pod_container_resource_requests gauge). Gap-robust:
-	// avg_over_time is independent of sample count, unlike the previous
-	// sum_over_time(...) * scrape_interval form, which under-counted on scrape gaps.
-	//
-	// kube-state-metrics keeps exporting the request until the pod object is
-	// deleted, so a finished CronJob (kept up to TTLSecondsAfterFinished) would
-	// bill the whole window. phase="Running" is 1 or 0 on every scrape; its
-	// average is the fraction of samples that were actually Running. Multiply
-	// the two averages — do not filter phase == 1 first, or the 0 samples
-	// disappear and avg_over_time ignores the finished time again. The request
-	// on one pod series is constant, so avg(request) * avg(phase) is the
-	// running integral.
+	// Byte-seconds of memory requested while the pod is Running.
+	// avg_over_time is the full request for every series that existed at any
+	// point in the window, so summing them bills the brief series kube-state-metrics
+	// emits before the node label is set as a second full day (a 1d query is ~2x).
+	// max by container collapses those label variants; the request itself does not
+	// change when the node label appears. The Running gauge is 0 or 1 on every
+	// scrape, so its average is the fraction of samples the pod was Running.
+	// Multiply the averages — filtering phase == 1 first drops the 0 samples and
+	// bills finished pods for the whole window again. max on the phase side keeps
+	// the join to one series per pod (a second uid would many-to-many).
 	q.Set("query", fmt.Sprintf(
-		`(sum(avg_over_time(kube_pod_container_resource_requests{namespace="%s",resource="memory",pod=~".*-%d-[^-]+-[^-]+$"}[%s]) * on(namespace, pod) group_left() avg_over_time(kube_pod_status_phase{namespace="%s",phase="Running",pod=~".*-%d-[^-]+-[^-]+$"}[%s])) or vector(0)) * %d`,
+		`(sum(
+			max by (namespace, pod, container) (
+				avg_over_time(kube_pod_container_resource_requests{namespace="%s",resource="memory",pod=~".*-%d-[^-]+-[^-]+$"}[%s])
+			)
+			* on(namespace, pod) group_left()
+			max by (namespace, pod) (
+				avg_over_time(kube_pod_status_phase{namespace="%s",phase="Running",pod=~".*-%d-[^-]+-[^-]+$"}[%s])
+			)
+		) or vector(0)) * %d`,
 		c.Namespace, projectID, dataRange, c.Namespace, projectID, dataRange, rangeSecond,
 	))
 	q.Set("time", strconv.FormatInt(startTimeUnix, 10))
