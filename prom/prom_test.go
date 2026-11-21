@@ -113,11 +113,12 @@ func TestSummaryStaticEgressQuery(t *testing.T) {
 	}
 }
 
-// TestSummaryMemoryQuery guards that memory is billed with the same gap-robust
-// avg_over_time(...) * rangeSecond formula as SummaryCPU — both measure the
-// kube_pod_container_resource_requests gauge, so both should compute
-// request-seconds the same way. The previous sum_over_time(...) * 15 hardcoded
-// the scrape interval and under-counted (under-billed) on scrape gaps.
+// TestSummaryMemoryQuery guards that reserved memory is avg(request) *
+// avg(Running) * rangeSecond, with label variants of one container collapsed
+// before the sum. Summing every request series' average bills the brief
+// empty-node series as a second full day, so a 1d query comes out about 2x.
+// Filtering phase == 1 before the average would drop the 0 samples and bill
+// finished pods for the whole window again.
 func TestSummaryMemoryQuery(t *testing.T) {
 	var gotQuery, gotTime string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,14 +137,18 @@ func TestSummaryMemoryQuery(t *testing.T) {
 	if got != "99" {
 		t.Fatalf("value = %q, want %q", got, "99")
 	}
-	if !strings.Contains(gotQuery, `sum(avg_over_time(kube_pod_container_resource_requests{namespace="deploys",resource="memory",pod=~".*-7-[^-]+-[^-]+$"}[1d]))`) {
-		t.Fatalf("memory query not using the avg_over_time gauge integral: %s", gotQuery)
+	gotQuery = strings.Join(strings.Fields(gotQuery), " ")
+	if !strings.Contains(gotQuery, `max by (namespace, pod, container) ( avg_over_time(kube_pod_container_resource_requests{namespace="deploys",resource="memory",pod=~".*-7-[^-]+-[^-]+$"}[1d]) )`) {
+		t.Fatalf("memory query does not collapse request series per container: %s", gotQuery)
 	}
-	if !strings.Contains(gotQuery, `) * 86400`) {
+	if !strings.Contains(gotQuery, `* on(namespace, pod) group_left() max by (namespace, pod) ( avg_over_time(kube_pod_status_phase{namespace="deploys",phase="Running",pod=~".*-7-[^-]+-[^-]+$"}[1d]) )`) {
+		t.Fatalf("memory query not scaled by one Running phase series per pod: %s", gotQuery)
+	}
+	if !strings.Contains(gotQuery, ") * 86400") {
 		t.Fatalf("memory query not scaled by rangeSecond: %s", gotQuery)
 	}
 	if strings.Contains(gotQuery, "sum_over_time") || strings.Contains(gotQuery, "* 15") {
-		t.Fatalf("memory query still uses the gap-fragile sum_over_time/scrape-interval form: %s", gotQuery)
+		t.Fatalf("memory query uses the scrape-interval form: %s", gotQuery)
 	}
 	if gotTime != "1700000000" {
 		t.Fatalf("time = %q, want 1700000000", gotTime)
